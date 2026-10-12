@@ -1,6 +1,6 @@
 # Ember
 
-A music player for [Kindling](https://github.com/LukeM-99/Kindling) in the style of the iPad Music app before it became Apple Music: an album grid, tabs for Playlists, Songs, Artists and Genres, album and artist pages, and an iTunes-style mini player. [MPD](https://www.musicpd.org/) plays the music and keeps the library; Ember is a small GTK3 frontend in C, themed from your wallpaper. No Qt, no Python, no systemd.
+A music player for [Kindling](https://github.com/LukeM-99/Kindling) in the style of the iPad Music app before it became Apple Music: an album grid, tabs for Playlists, Songs, Artists and Genres, album and artist pages, and an iTunes-style mini player. [MPD](https://www.musicpd.org/) plays the music and keeps the library; Ember is a small GTK3 frontend written in C, so it stays light on old machines, and it is themed from your wallpaper. It needs only GTK3 and libmpdclient, and runs MPD as your user, so it works without systemd.
 
 ![Ember: the albums grid, themed from the wallpaper](docs/screenshots/albums.png)
 
