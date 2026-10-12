@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Ember
+GenericName=Music Player
+Comment=Play your music library through MPD
+Exec=ember
+Icon=ember
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;mpd;player;album;playlist;
+StartupWMClass=Ember
