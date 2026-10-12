@@ -58,30 +58,12 @@ static GtkWidget *label(const char *markup, const char *cls) {
   return l;
 }
 
-static GtkWidget *text_button(const char *text, const char *cls, GCallback cb, gpointer data) {
-  GtkWidget *b = gtk_button_new_with_label(text);
-  gtk_style_context_add_class(gtk_widget_get_style_context(b), cls);
-  gtk_widget_set_halign(b, GTK_ALIGN_START);
-  g_signal_connect_swapped(b, "clicked", cb, data);
-  return b;
-}
-
 static void on_back(void) { gtk_stack_set_visible_child_name(stack, back_to ? back_to : "albums"); }
 
-static void play(Group *g) { play_list(g->songs, 0); }
+static void play(Group *g) { play_list(g->songs, 0, FALSE); }
+static void shuffle(Group *g) { play_list(g->songs, 0, TRUE); }
 
-static void shuffle(Group *g) {
-  GPtrArray *s = g_ptr_array_copy(g->songs, NULL, NULL);
-  for (guint i = s->len; i > 1; i--) {  // Fisher-Yates
-    guint j = g_random_int_range(0, i);
-    gpointer t = s->pdata[i - 1];
-    s->pdata[i - 1] = s->pdata[j], s->pdata[j] = t;
-  }
-  play_list(s, 0);
-  g_ptr_array_unref(s);
-}
-
-static GtkWidget *play_buttons(Group *g) {
+GtkWidget *play_buttons(Group *g) {
   GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_box_pack_start(GTK_BOX(row), text_button("Play", "pill", G_CALLBACK(play), g), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(row), text_button("Shuffle", "pill", G_CALLBACK(shuffle), g), FALSE, FALSE, 0);

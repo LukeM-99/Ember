@@ -35,13 +35,16 @@ GtkWidget *song_list(GtkTreeModel *m, const int *cols, int n, gboolean headers);
 GtkWidget *scrolled(GtkWidget *child);
 char *sort_key(const char *s);
 char *album_key(const struct mpd_song *m);  // the cover key: album artist and album
+const char *song_tag(const struct mpd_song *m, enum mpd_tag_type t);  // NULL if missing or empty
 Group *library_album(const char *key);      // NULL if it isn't in the library
 Group *library_artist(const char *name);    // by album artist
-void play_list(GPtrArray *songs, guint at); // replaces the queue and plays songs[at]
+void play_list(GPtrArray *songs, guint at, gboolean shuffle);  // replaces the queue and plays songs[at]
+char *fmt_secs(unsigned s);                  // "3:07", "1:02:09"
 GdkPixbuf *cover_placeholder(void);
 
 // A song_list can carry, as object data: "on-activate", a void (*)(GtkTreeView *, GtkTreePath *)
-// run on double-click instead of playing the list; "menu-extra", a void (*)(GtkWidget *menu,
+// run on double-click instead of playing the list; "on-delete", run by the Delete key with
+// (NULL, NULL), for lists songs can be removed from; "menu-extra", a void (*)(GtkWidget *menu,
 // guint n_songs) that adds its own items to the right-click menu.
 
 // playlists.c: the Playlists tab and the right-click menu.
@@ -61,6 +64,7 @@ void focus_artist(const char *name);
 void focus_detach(void);              // before the library reloads
 void focus_attach(void);              // after
 void focus_art_changed(void);
+GtkWidget *play_buttons(Group *g);   // Play and Shuffle
 
 // mini.c: the mini and micro players.
 void mini_init(GtkApplication *app, GtkWidget *main_window);
@@ -69,6 +73,7 @@ gboolean mini_present(void);                             // raises it, if one is
 void mini_song(const char *title, const char *sub, const struct mpd_song *song);  // song may be NULL
 void mini_progress(gboolean playing, double pos, unsigned duration);
 void mini_art_changed(void);
+void mini_save(void);                                    // remembers where they were left
 const char *mini_album(void);                            // its cover key, or NULL
 
 // ember.c: player actions, for the mini player's buttons.
@@ -79,10 +84,12 @@ void player_next(void);
 void player_shuffle(GtkToggleButton *b);
 gboolean player_scrub(GtkRange *r, GtkScrollType s, double v, gpointer unused);
 gboolean player_key(GdkEventKey *ev, gboolean typing);  // the shared shortcuts; TRUE if handled
+GtkWidget *icon_button(const char *icon, const char *tip, GtkIconSize size, GCallback cb);
+GtkWidget *text_button(const char *text, const char *cls, GCallback cb, gpointer data);  // cb(data)
 
 // mpris.c: MPRIS on the session bus, for playerctl and media keys.
 void mpris_init(GApplication *app);
-void mpris_update(const struct mpd_status *st, const struct mpd_song *song);
+void mpris_update(const struct mpd_status *st, const struct mpd_song *song);  // st NULL: disconnected
 void mpris_art_changed(void);
 
 // art.c: album covers, fetched in the background and cached on disk.
@@ -102,10 +109,10 @@ void theme_reload(void);
 
 // settings.c: ~/.config/ember/settings.
 void settings_init(void);
+char *settings_string(const char *key);  // NULL if unset
+void settings_set_string(const char *key, const char *v);
+gboolean settings_get(const char *key);  // keep-playing, discord, cover-lookup: off unless set
 const char *settings_style(void);     // "flat" or "classic"
-gboolean settings_keep_playing(void); // after Ember closes
-gboolean settings_discord(void);      // Rich Presence on
-gboolean settings_cover_lookup(void); // covers from MusicBrainz / Cover Art Archive on
 
 // discord.c: Rich Presence. coverart.c: cover URLs from the internet, for it. Both off by default.
 void discord_update(const struct mpd_song *song, gboolean playing, double elapsed, unsigned duration);

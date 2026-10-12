@@ -7,7 +7,7 @@
 
 #define CHUNK (256 * 1024)  // bytes per round trip; MPD's default is 8 KB
 
-typedef struct { char *key, *uri, *path; int size; GdkPixbuf *pix; } Job;
+typedef struct { char *key, *uri, *path; int size; GdkPixbuf *pix; gboolean lost; } Job;
 
 int art_size = 128;
 static GHashTable *mem;      // key -> GdkPixbuf; a NULL value means the album has no cover
@@ -49,7 +49,8 @@ static GBytes *fetch(struct mpd_connection *c, gboolean embedded, const char *ur
 static gboolean done(gpointer p) {  // back on the main thread
   Job *j = p;
   g_hash_table_remove(pending, j->key);
-  g_hash_table_insert(mem, j->key, j->pix);
+  if (j->lost) g_free(j->key);  // no MPD to ask: not "no cover", so it's asked for again later
+  else g_hash_table_insert(mem, j->key, j->pix);
   g_free(j->uri), g_free(j->path), g_free(j);
   changed();
   return G_SOURCE_REMOVE;
@@ -65,6 +66,7 @@ static gpointer worker(gpointer unused) {
     GBytes *data = c ? fetch(c, FALSE, j->uri, chunk) : NULL;
     if (c && !data) data = fetch(c, TRUE, j->uri, chunk);
     if (c && mpd_connection_get_error(c) != MPD_ERROR_SUCCESS) mpd_connection_free(c), c = NULL;
+    j->lost = !c && !data;
     if (data) {
       GInputStream *in = g_memory_input_stream_new_from_bytes(data);
       j->pix = gdk_pixbuf_new_from_stream_at_scale(in, j->size, j->size, TRUE, NULL, NULL);

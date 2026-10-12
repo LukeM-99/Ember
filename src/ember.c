@@ -8,7 +8,8 @@ struct mpd_connection *conn;
 static guint watch, ticker, seeker, retry;
 static gboolean idling;  // conn is in MPD's idle mode
 static int depth;        // begin()s not yet end()ed
-static GtkWidget *win, *title, *subtitle, *play_icon, *scrub, *elapsed_l, *remain_l, *volume, *stack, *shuffle;
+static GtkWidget *win, *title, *subtitle, *play_icon, *scrub, *elapsed_l, *remain_l, *volume, *stack, *shuffle, *repeat;
+static gboolean repeat_on, single_on;  // MPD's repeat and single modes: Repeat All, Repeat One
 
 static enum mpd_state state;
 static unsigned duration, queue_len;  // seconds, songs
@@ -29,6 +30,12 @@ static void disconnect(const char *why) {  // why may belong to conn, so use it 
   gtk_label_set_text(GTK_LABEL(remain_l), "");
   gtk_image_set_from_icon_name(GTK_IMAGE(play_icon), "media-playback-start-symbolic", GTK_ICON_SIZE_LARGE_TOOLBAR);
   gtk_widget_set_sensitive(scrub, FALSE);
+  gtk_window_set_title(GTK_WINDOW(win), "Ember");
+  mini_song("Not connected to MPD", why, NULL);
+  mini_progress(FALSE, 0, 0);
+  mpris_update(NULL, NULL);
+  discord_update(NULL, FALSE, 0, 0);
+  if (now_uri) { g_clear_pointer(&now_uri, g_free); gtk_widget_queue_draw(win); }  // no ▶ anywhere
   state = MPD_STATE_UNKNOWN;
   if (watch) g_source_remove(watch);
   if (ticker) g_source_remove(ticker);
@@ -49,11 +56,6 @@ gboolean ok(void) {
   return FALSE;
 }
 
-static char *fmt_time(double s) {
-  int t = s;
-  return g_strdup_printf("%d:%02d", t / 60, t % 60);
-}
-
 // Moves the scrubber and the time labels to the current position; runs every second while playing.
 static gboolean tick(gpointer unused) {
   (void)unused;
@@ -61,12 +63,16 @@ static gboolean tick(gpointer unused) {
     : elapsed + (state == MPD_STATE_PLAY ? (g_get_monotonic_time() - elapsed_at) / 1e6 : 0);
   if (duration && pos > duration) pos = duration;
   if (seek_to < 0) gtk_range_set_value(GTK_RANGE(scrub), pos);
-  char *e = fmt_time(pos), *r = fmt_time(duration > pos ? duration - pos : 0), *rm = g_strconcat("-", r, NULL);
+  char *e = fmt_secs(pos), *r = fmt_secs(duration > pos ? duration - pos : 0), *rm = g_strconcat("-", r, NULL);
   gtk_label_set_text(GTK_LABEL(elapsed_l), state == MPD_STATE_STOP ? "" : e);
   gtk_label_set_text(GTK_LABEL(remain_l), state == MPD_STATE_STOP || !duration ? "" : rm);
   g_free(e), g_free(r), g_free(rm);
   mini_progress(state == MPD_STATE_PLAY, pos, duration);
   return G_SOURCE_CONTINUE;
+}
+
+static void on_repeat(void) {  // off -> all -> one -> off, like the iPod
+  if (begin()) mpd_run_repeat(conn, !repeat_on || !single_on), mpd_run_single(conn, repeat_on && !single_on), end();
 }
 
 static void refresh(void) {
@@ -86,6 +92,13 @@ static void refresh(void) {
   g_signal_handlers_block_by_func(shuffle, player_shuffle, NULL);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(shuffle), mpd_status_get_random(st));
   g_signal_handlers_unblock_by_func(shuffle, player_shuffle, NULL);
+  repeat_on = mpd_status_get_repeat(st), single_on = mpd_status_get_single(st);
+  g_signal_handlers_block_by_func(repeat, on_repeat, NULL);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(repeat), repeat_on);
+  g_signal_handlers_unblock_by_func(repeat, on_repeat, NULL);
+  gtk_image_set_from_icon_name(GTK_IMAGE(gtk_button_get_image(GTK_BUTTON(repeat))),
+    single_on ? "media-playlist-repeat-song-symbolic" : "media-playlist-repeat-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
+  gtk_widget_set_tooltip_text(repeat, !repeat_on ? "Repeat: Off" : single_on ? "Repeat: One" : "Repeat: All");
   int vol = mpd_status_get_volume(st);  // -1: no mixer
   gtk_widget_set_sensitive(volume, vol >= 0);
   if (vol >= 0) gtk_range_set_value(GTK_RANGE(volume), vol);
@@ -97,9 +110,9 @@ static void refresh(void) {
   gtk_widget_set_sensitive(scrub, duration && state != MPD_STATE_STOP);
 
   if (song) {
-    const char *t = mpd_song_get_tag(song, MPD_TAG_TITLE, 0);
-    const char *ar = mpd_song_get_tag(song, MPD_TAG_ARTIST, 0);
-    const char *al = mpd_song_get_tag(song, MPD_TAG_ALBUM, 0);
+    const char *t = song_tag(song, MPD_TAG_TITLE);
+    const char *ar = song_tag(song, MPD_TAG_ARTIST);
+    const char *al = song_tag(song, MPD_TAG_ALBUM);
     char *base = g_path_get_basename(mpd_song_get_uri(song));
     char *m = g_markup_printf_escaped("<b>%s</b>", t ? t : base);
     char *sub = g_strjoin(ar && al ? " — " : "", ar ? ar : "", al ? al : "", NULL);
@@ -111,7 +124,7 @@ static void refresh(void) {
     char *links = g_strjoin(ar && al ? " — " : "", la, lb, NULL);
     gtk_label_set_markup(GTK_LABEL(subtitle), links);
     g_free(la), g_free(lb), g_free(links);
-    const char *aa = mpd_song_get_tag(song, MPD_TAG_ALBUM_ARTIST, 0);
+    const char *aa = song_tag(song, MPD_TAG_ALBUM_ARTIST);
     g_free(now_album), g_free(now_artist);
     now_album = album_key(song);
     now_artist = g_strdup(aa ? aa : ar ? ar : "Unknown Artist");
@@ -187,7 +200,7 @@ struct mpd_connection *mpd_open(void) {
 
 static gboolean connect_mpd(gboolean spawn) {
   conn = open_raw();
-  if (spawn && mpd_connection_get_error(conn) != MPD_ERROR_SUCCESS) {
+  if (spawn && !g_getenv("MPD_HOST") && mpd_connection_get_error(conn) != MPD_ERROR_SUCCESS) {  // only Ember's own MPD
     g_spawn_command_line_async("mpd", NULL);
     for (int i = 0; i < 30 && mpd_connection_get_error(conn) != MPD_ERROR_SUCCESS; i++) {
       mpd_connection_free(conn);
@@ -310,11 +323,38 @@ static gboolean on_key(GtkWidget *w, GdkEvent *ev, GtkWidget *search) {
   return GDK_EVENT_STOP;
 }
 
-static GtkWidget *button(const char *icon, GCallback cb) {
-  GtkWidget *b = gtk_button_new_from_icon_name(icon, GTK_ICON_SIZE_LARGE_TOOLBAR);
+GtkWidget *icon_button(const char *icon, const char *tip, GtkIconSize size, GCallback cb) {
+  GtkWidget *b = gtk_button_new_from_icon_name(icon, size);
   gtk_button_set_relief(GTK_BUTTON(b), GTK_RELIEF_NONE);
+  gtk_widget_set_tooltip_text(b, tip);
+  gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
   g_signal_connect(b, "clicked", cb, NULL);
   return b;
+}
+
+GtkWidget *text_button(const char *text, const char *cls, GCallback cb, gpointer data) {
+  GtkWidget *b = gtk_button_new_with_label(text);
+  gtk_style_context_add_class(gtk_widget_get_style_context(b), cls);
+  gtk_widget_set_halign(b, GTK_ALIGN_START);
+  g_signal_connect_swapped(b, "clicked", cb, data);
+  return b;
+}
+
+static GtkWidget *mode_button(const char *icon, const char *tip, GCallback cb) {  // shuffle, repeat: lit while on
+  GtkWidget *b = gtk_toggle_button_new();
+  gtk_button_set_image(GTK_BUTTON(b), gtk_image_new_from_icon_name(icon, GTK_ICON_SIZE_SMALL_TOOLBAR));
+  gtk_button_set_relief(GTK_BUTTON(b), GTK_RELIEF_NONE);
+  gtk_widget_set_tooltip_text(b, tip);
+  gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
+  gtk_style_context_add_class(gtk_widget_get_style_context(b), "mode");
+  g_signal_connect(b, "toggled", cb, NULL);
+  return b;
+}
+
+static gboolean on_close(GtkWidget *w, GdkEvent *ev, GApplication *app) {
+  (void)w, (void)ev;
+  g_application_quit(app);
+  return GDK_EVENT_STOP;
 }
 
 static void activate(GtkApplication *app) {
@@ -335,30 +375,30 @@ static void activate(GtkApplication *app) {
   // clicking a slider jumps to that spot, instead of stepping towards it
   g_object_set(gtk_settings_get_default(), "gtk-primary-button-warps-slider", TRUE, NULL);
   gtk_window_set_title(GTK_WINDOW(win), "Ember");
-  gtk_window_set_default_size(GTK_WINDOW(win), 960, 600);
+  int w = 960, h = 600;  // as it was left
+  char *size = settings_string("window");
+  if (size) sscanf(size, "%dx%d", &w, &h);
+  gtk_window_set_default_size(GTK_WINDOW(win), w, h);
+  g_free(size);
 
   // Top bar, as on the iPad: transport and volume on the left, now playing in the middle.
   GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_style_context_add_class(gtk_widget_get_style_context(bar), "nowbar");
   GtkWidget *transport = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  GtkWidget *play = button("media-playback-start-symbolic", G_CALLBACK(player_toggle));
+  GtkWidget *play = icon_button("media-playback-start-symbolic", "Play/Pause", GTK_ICON_SIZE_LARGE_TOOLBAR, G_CALLBACK(player_toggle));
   play_icon = gtk_button_get_image(GTK_BUTTON(play));
-  gtk_box_pack_start(GTK_BOX(transport), button("media-skip-backward-symbolic", G_CALLBACK(player_prev)), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(transport), icon_button("media-skip-backward-symbolic", "Previous", GTK_ICON_SIZE_LARGE_TOOLBAR, G_CALLBACK(player_prev)), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(transport), play, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(transport), button("media-skip-forward-symbolic", G_CALLBACK(player_next)), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(transport), icon_button("media-skip-forward-symbolic", "Next", GTK_ICON_SIZE_LARGE_TOOLBAR, G_CALLBACK(player_next)), FALSE, FALSE, 0);
   volume = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 5);
   gtk_scale_set_draw_value(GTK_SCALE(volume), FALSE);
   gtk_widget_set_size_request(volume, 120, -1);
   g_signal_connect(volume, "change-value", G_CALLBACK(on_volume), NULL);
   gtk_box_pack_start(GTK_BOX(transport), volume, FALSE, FALSE, 8);
-  shuffle = gtk_toggle_button_new();
-  gtk_button_set_image(GTK_BUTTON(shuffle), gtk_image_new_from_icon_name("media-playlist-shuffle-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR));
-  gtk_button_set_relief(GTK_BUTTON(shuffle), GTK_RELIEF_NONE);
-  gtk_widget_set_tooltip_text(shuffle, "Shuffle");
-  gtk_widget_set_valign(shuffle, GTK_ALIGN_CENTER);
-  gtk_style_context_add_class(gtk_widget_get_style_context(shuffle), "shuffle");
-  g_signal_connect(shuffle, "toggled", G_CALLBACK(player_shuffle), NULL);
+  shuffle = mode_button("media-playlist-shuffle-symbolic", "Shuffle", G_CALLBACK(player_shuffle));
+  repeat = mode_button("media-playlist-repeat-symbolic", "Repeat: Off", G_CALLBACK(on_repeat));
   gtk_box_pack_start(GTK_BOX(transport), shuffle, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(transport), repeat, FALSE, FALSE, 0);
 
   GtkWidget *now = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   title = gtk_label_new(NULL);
@@ -398,10 +438,8 @@ static void activate(GtkApplication *app) {
   gtk_box_pack_end(GTK_BOX(bar), settings_button(), FALSE, FALSE, 0);
   gtk_box_pack_end(GTK_BOX(bar), search, FALSE, FALSE, 0);
   gtk_box_pack_end(GTK_BOX(bar), queue_button(), FALSE, FALSE, 0);
-  GtkWidget *shrink = button("view-restore-symbolic", G_CALLBACK(mini_toggle));
-  gtk_widget_set_tooltip_text(shrink, "Mini Player (Ctrl+Shift+M)");
-  gtk_widget_set_valign(shrink, GTK_ALIGN_CENTER);
-  gtk_box_pack_end(GTK_BOX(bar), shrink, FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(bar), icon_button("view-restore-symbolic", "Mini Player (Ctrl+Shift+M)", GTK_ICON_SIZE_LARGE_TOOLBAR,
+                                              G_CALLBACK(mini_toggle)), FALSE, FALSE, 0);
   gtk_widget_set_size_request(now, 420, -1);
 
   // Bottom bar: the views, as tabs.
@@ -418,7 +456,9 @@ static void activate(GtkApplication *app) {
   gtk_box_pack_start(GTK_BOX(root), tabs, FALSE, FALSE, 0);
   gtk_container_add(GTK_CONTAINER(win), root);
   gtk_widget_show_all(win);
-  gtk_stack_set_visible_child_name(GTK_STACK(stack), "albums");  // only works once the pages are shown
+  char *tab = settings_string("tab");  // only works once the pages are shown
+  gtk_stack_set_visible_child_name(GTK_STACK(stack), tab && gtk_stack_get_child_by_name(GTK_STACK(stack), tab) ? tab : "albums");
+  g_free(tab);
   // show_all also showed the switcher's buttons for the untitled album and artist pages
   GList *pages = gtk_container_get_children(GTK_CONTAINER(stack)), *buttons = gtk_container_get_children(GTK_CONTAINER(switcher));
   for (GList *p = pages, *t = buttons; p && t; p = p->next, t = t->next) {
@@ -431,14 +471,24 @@ static void activate(GtkApplication *app) {
 
   mini_init(app, win);
   // the hidden mini windows would keep the app alive after the main one closes
-  g_signal_connect_swapped(win, "delete-event", G_CALLBACK(g_application_quit), app);
+  g_signal_connect(win, "delete-event", G_CALLBACK(on_close), app);
   connect_mpd(TRUE);
 }
 
 // Closing Ember stops the music unless the user chose otherwise. MPD on Ember's own socket (the
 // one Ember starts) is told to exit as well; it saves its place and resumes, paused, next time.
 static void on_shutdown(void) {
-  if (!conn || settings_keep_playing() || !begin()) return;
+  if (win) {  // reopen as it was left: the size and the tab (not an album or artist page, empty at start)
+    int w, h;
+    gtk_window_get_size(GTK_WINDOW(win), &w, &h);
+    char *size = g_strdup_printf("%dx%d", w, h);
+    const char *tab = gtk_stack_get_visible_child_name(GTK_STACK(stack));
+    settings_set_string("window", size);
+    if (tab && strcmp(tab, "album") && strcmp(tab, "artist")) settings_set_string("tab", tab);
+    g_free(size);
+    mini_save();
+  }
+  if (!conn || settings_get("keep-playing") || !begin()) return;
   mpd_run_pause(conn, true);
   if (!g_getenv("MPD_HOST") && mpd_send_command(conn, "kill", NULL))
     mpd_response_finish(conn);  // wait until MPD hangs up; closing first can lose the command

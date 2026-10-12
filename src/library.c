@@ -21,9 +21,14 @@ typedef struct {     // the Artists and Genres pages: names on the left, their s
 } Browse;
 static Browse by_artist = { .groups = &artists }, by_genre = { .groups = &genres };
 
-static char *tag(const struct mpd_song *m, enum mpd_tag_type t, const char *unknown) {
+const char *song_tag(const struct mpd_song *m, enum mpd_tag_type t) {
   const char *v = mpd_song_get_tag(m, t, 0);
-  return g_strdup(v && *v ? v : unknown);
+  return v && *v ? v : NULL;
+}
+
+static char *tag(const struct mpd_song *m, enum mpd_tag_type t, const char *unknown) {
+  const char *v = song_tag(m, t);
+  return g_strdup(v ? v : unknown);
 }
 
 // Case- and accent-folded, compared bytewise: spaces count ("A Flower" before "Above"),
@@ -113,12 +118,12 @@ static GPtrArray *group(size_t name_at, size_t artist_at) {
       g->artist = artist_at ? g_strdup(artist) : NULL;
       g->art = artist_at ? g_strdup(id) : NULL;
       g->songs = g_ptr_array_new();
-      g->year = s->year;
       g_hash_table_insert(seen, id, g);
       g_ptr_array_add(out, g);
     } else g_free(id);
     g_ptr_array_add(g->songs, s);
     g->secs += s->secs;
+    if (!g->year) g->year = s->year;  // the first song with a Date tag
     if (artist_at) s->album_g = g;
   }
   g_hash_table_destroy(seen);
@@ -144,7 +149,7 @@ static gboolean group_matches(Group *g) {
   return FALSE;
 }
 
-static char *fmt_secs(unsigned s) {
+char *fmt_secs(unsigned s) {
   return s >= 3600 ? g_strdup_printf("%u:%02u:%02u", s / 3600, s / 60 % 60, s % 60) : g_strdup_printf("%u:%02u", s / 60, s % 60);
 }
 
@@ -158,7 +163,7 @@ static gboolean collect(GtkTreeModel *m, GtkTreePath *p, GtkTreeIter *it, gpoint
   return FALSE;
 }
 
-void play_list(GPtrArray *list, guint at) {
+void play_list(GPtrArray *list, guint at, gboolean shuffle) {
   if (begin()) {
     mpd_run_clear(conn);
     for (guint i = 0; i < list->len && ok(); i += 500) {  // MPD caps a command list at 2 MB
@@ -167,6 +172,7 @@ void play_list(GPtrArray *list, guint at) {
       mpd_command_list_end(conn);
       mpd_response_finish(conn);
     }
+    if (shuffle && ok()) mpd_run_shuffle(conn);
     if (ok()) mpd_run_play_pos(conn, at);
     end();
   }
@@ -177,7 +183,7 @@ static void play_from(GtkTreeModel *m, Song *target) {
   gtk_tree_model_foreach(m, collect, list);
   guint at = 0;
   g_ptr_array_find(list, target, &at);
-  play_list(list, at);
+  play_list(list, at, FALSE);
   g_ptr_array_unref(list);
 }
 
@@ -198,21 +204,27 @@ static void on_song(GtkTreeView *v, GtkTreePath *path, GtkTreeViewColumn *c, gpo
 
 // ---- song lists (Songs page, artist and genre detail, album card)
 
+// The playing song's row is bold, in the accent colour (the GTK theme's selection colour
+// without Kindling), with a ▶ as the iPod marked it.
 static void song_cell(GtkTreeViewColumn *c, GtkCellRenderer *r, GtkTreeModel *m, GtkTreeIter *it, gpointer what) {
-  (void)c;
   Song *s;
   Group *g;
   gtk_tree_model_get(m, it, COL_SONG, &s, COL_GROUP, &g, -1);
+  gboolean playing = s && !g_strcmp0(s->uri, now_playing());
+  GdkRGBA accent;
+  GtkStyleContext *sc = gtk_widget_get_style_context(gtk_tree_view_column_get_tree_view(c));
+  gboolean tint = playing && (gtk_style_context_lookup_color(sc, "accent", &accent) ||
+                              gtk_style_context_lookup_color(sc, "theme_selected_bg_color", &accent));
   char *text = NULL;
   switch (GPOINTER_TO_INT(what)) {
-  case NUM: text = s && !g_strcmp0(s->uri, now_playing()) ? g_strdup("▶")  // as the iPod marked it
-                 : s && s->track ? g_strdup_printf("%u", s->track) : NULL; break;
+  case NUM: text = playing ? g_strdup("▶") : s && s->track ? g_strdup_printf("%u", s->track) : NULL; break;
   case NAME: text = s ? g_strdup(s->title) : g->year ? g_strdup_printf("%s  (%u)", g->name, g->year) : g_strdup(g->name); break;
   case TIME: text = fmt_secs(s ? s->secs : g->secs); break;
   case ARTIST: text = g_strdup(s ? s->artist : ""); break;
   case ALBUM: text = g_strdup(s ? s->album : ""); break;
   }
-  g_object_set(r, "text", text ? text : "", "weight", s ? PANGO_WEIGHT_NORMAL : PANGO_WEIGHT_BOLD, NULL);
+  g_object_set(r, "text", text ? text : "", "weight", s && !playing ? PANGO_WEIGHT_NORMAL : PANGO_WEIGHT_BOLD,
+               "foreground-rgba", tint ? &accent : NULL, NULL);
   g_free(text);
 }
 
@@ -260,6 +272,14 @@ static gboolean on_list_press(GtkWidget *w, GdkEventButton *ev, gpointer unused)
   return GDK_EVENT_STOP;
 }
 
+static gboolean on_list_key(GtkWidget *w, GdkEventKey *ev, gpointer unused) {  // Delete: "on-delete", if it has one
+  (void)unused;
+  void (*del)(gpointer, gpointer) = g_object_get_data(G_OBJECT(w), "on-delete");
+  if (!del || ev->keyval != GDK_KEY_Delete) return GDK_EVENT_PROPAGATE;
+  del(NULL, NULL);
+  return GDK_EVENT_STOP;
+}
+
 GtkWidget *song_list(GtkTreeModel *m, const int *cols, int n, gboolean headers) {
   static const char *titles[] = { "", "Name", "Time", "Artist", "Album" };
   GtkWidget *v = gtk_tree_view_new_with_model(m);
@@ -285,6 +305,7 @@ GtkWidget *song_list(GtkTreeModel *m, const int *cols, int n, gboolean headers) 
   gtk_tree_selection_set_mode(gtk_tree_view_get_selection(GTK_TREE_VIEW(v)), GTK_SELECTION_MULTIPLE);
   g_signal_connect(v, "row-activated", G_CALLBACK(on_song), NULL);
   g_signal_connect(v, "button-press-event", G_CALLBACK(on_list_press), NULL);
+  g_signal_connect(v, "key-press-event", G_CALLBACK(on_list_key), NULL);
   return v;
 }
 
@@ -484,20 +505,29 @@ static void on_album(GtkIconView *v, GtkTreePath *path, gpointer unused) {
   GtkWidget *list = song_list(GTK_TREE_MODEL(tracks), cols, 3, FALSE);
   g_object_unref(tracks);
 
-  char *yr = g->year ? g_strdup_printf(" · %u", g->year) : g_strdup("");
+  // the album and artist names open their pages, as the names in the top bar do
+  GtkWidget *album = text_button(g->name, "albumlink", G_CALLBACK(focus_album), g->art);
+  GtkWidget *artist = text_button(g->artist, "link", G_CALLBACK(focus_artist), g->artist);
+  char *yr = g->year ? g_strdup_printf("%u · ", g->year) : g_strdup("");
   char *len = fmt_secs(g->secs);
-  char *mk = g_markup_printf_escaped("<big><b>%s</b></big>\n<span alpha='60%%'>%s%s · %u song%s, %s</span>",
-    g->name, g->artist, yr, g->songs->len, g->songs->len == 1 ? "" : "s", len);
-  GtkWidget *label = gtk_label_new(NULL);
-  gtk_label_set_markup(GTK_LABEL(label), mk);
+  char *d = g_strdup_printf("%s%u song%s, %s", yr, g->songs->len, g->songs->len == 1 ? "" : "s", len);
+  GtkWidget *label = gtk_label_new(d);
+  gtk_style_context_add_class(gtk_widget_get_style_context(label), "dim");
   gtk_label_set_xalign(GTK_LABEL(label), 0);
-  gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
-  g_free(yr), g_free(len), g_free(mk);
+  g_free(yr), g_free(len), g_free(d);
+  GtkWidget *names = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_set_valign(names, GTK_ALIGN_CENTER);
+  for (GtkWidget **w = (GtkWidget *[]){ album, artist, label, NULL }; *w; w++) {
+    GtkWidget *l = GTK_IS_LABEL(*w) ? *w : gtk_bin_get_child(GTK_BIN(*w));
+    gtk_label_set_ellipsize(GTK_LABEL(l), PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start(GTK_BOX(names), *w, FALSE, FALSE, 0);
+  }
+  gtk_box_pack_start(GTK_BOX(names), play_buttons(g), FALSE, FALSE, 6);
   card_cover = gtk_image_new_from_pixbuf(cover(g));
   card_album = g;
   GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 14);
   gtk_box_pack_start(GTK_BOX(head), card_cover, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(head), label, TRUE, TRUE, 0);
+  gtk_box_pack_start(GTK_BOX(head), names, TRUE, TRUE, 0);
 
   GtkWidget *sw = scrolled(list);
   gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(sw), TRUE);
@@ -514,6 +544,8 @@ static void on_album(GtkIconView *v, GtkTreePath *path, gpointer unused) {
   g_signal_connect(card, "destroy", G_CALLBACK(gtk_widget_destroyed), &card);
   g_signal_connect_swapped(card, "destroy", G_CALLBACK(g_nullify_pointer), &card_album);
   g_signal_connect(card, "closed", G_CALLBACK(gtk_widget_destroy), NULL);
+  g_signal_connect_swapped(album, "clicked", G_CALLBACK(gtk_popover_popdown), card);  // after the page opens
+  g_signal_connect_swapped(artist, "clicked", G_CALLBACK(gtk_popover_popdown), card);
   GdkRectangle rect;
   gtk_icon_view_get_cell_rect(v, path, NULL, &rect);
   gtk_popover_set_pointing_to(GTK_POPOVER(card), &rect);
@@ -521,9 +553,17 @@ static void on_album(GtkIconView *v, GtkTreePath *path, gpointer unused) {
   gtk_widget_show_all(box);
   gtk_popover_popup(GTK_POPOVER(card));
   gtk_tree_selection_unselect_all(gtk_tree_view_get_selection(GTK_TREE_VIEW(list)));  // focus picks row 1
+  for (guint i = 0; i < g->songs->len; i++)  // playing from this album: bring that song into view
+    if (!g_strcmp0(((Song *)g->songs->pdata[i])->uri, now_playing())) {
+      GtkTreePath *p = gtk_tree_path_new_from_indices(i, -1);
+      gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(list), p, NULL, TRUE, .5, 0);
+      gtk_tree_path_free(p);
+      break;
+    }
 }
 
 static GtkWidget *albums_page(void) {
+  art_init(art_arrived);  // first: it sets art_size, which the grid's cells are sized by
   album_store = gtk_list_store_new(2, G_TYPE_POINTER, G_TYPE_POINTER);
   album_view = gtk_icon_view_new_with_model(GTK_TREE_MODEL(album_store));
   GtkIconView *v = GTK_ICON_VIEW(album_view);
@@ -551,7 +591,6 @@ static GtkWidget *albums_page(void) {
   g_signal_connect(v, "size-allocate", G_CALLBACK(want_art), NULL);
   GtkWidget *sw = scrolled(album_view);
   g_signal_connect(gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(sw)), "value-changed", G_CALLBACK(want_art), NULL);
-  art_init(art_arrived);
   return sw;
 }
 

@@ -6,7 +6,9 @@ A music player for [Kindling](https://github.com/LukeM-99/Kindling) in the style
 
 ## Requirements
 
-- Debian or Devuan with `apt`, on X11. It is built for [Kindling](https://github.com/LukeM-99/Kindling) and works without it, using your GTK theme instead of the wallpaper palette.
+- **Debian 12 (bookworm) or Devuan 5 (daedalus), or newer**, with `apt`. Older releases lack the GLib and MPD versions Ember needs; `install.sh` checks and stops.
+- **X11.** Under Wayland the mini player can't keep its place or stay above other windows.
+- It is built for [Kindling](https://github.com/LukeM-99/Kindling) and works without it, using your GTK theme instead of the wallpaper palette.
 - Your music in `~/Music`. MPD reads tags and cover art from the files (embedded art, or `cover.jpg` and friends in the album folder).
 
 ## Install
@@ -19,9 +21,10 @@ cd ember
 
 Read `install.sh` before you run it. It:
 
-- Runs `sudo apt install` for `mpd`, the build tools, `libgtk-3-dev`, `libmpdclient-dev` and `curl`. While it installs MPD it holds back service starts (`policy-rc.d`), then disables the system MPD with `update-rc.d`: Ember runs MPD as you, not as a system daemon.
+- Runs `sudo apt install` for `mpd`, the build tools, `libgtk-3-dev`, `libmpdclient-dev` and `curl`. If MPD isn't installed yet, it holds back service starts while installing it (`policy-rc.d`), then disables the system MPD with `update-rc.d`: Ember runs MPD as you, not as a system daemon. An MPD that was already installed is left as it is.
 - Builds Ember with `make`.
 - Symlinks into `~` from the clone: `~/.config/mpd/mpd.conf`, `~/.local/bin/ember`, the launcher entry `~/.local/share/applications/ember.desktop` and its icon. Anything already there that is not a symlink is moved to `~/.dotfiles_backup/<date>/` first.
+- **Already have an MPD setup?** If `~/.config/mpd/mpd.conf` or `~/.mpdconf` is yours, it is kept and Ember's config is not linked. Point Ember at your MPD with `MPD_HOST` (see Settings); Ember then never starts or stops MPD, and closing it only pauses the music.
 
 Because the files are symlinks, keep the clone where it is.
 
@@ -38,13 +41,13 @@ The apt packages stay; remove them yourself if you no longer want them.
 
 ## Using it
 
-The top bar has the transport, volume, shuffle and now playing; the artist and album under the song are links to their pages. On the right: the mini player, Up Next, search and the ⋯ menu. The tabs along the bottom are **Playlists · Songs · Artists · Albums · Genres**.
+The top bar has the transport, volume, shuffle, repeat (off, all, one) and now playing; the artist and album under the song are links to their pages. On the right: the mini player, Up Next, search and the ⋯ menu. The tabs along the bottom are **Playlists · Songs · Artists · Albums · Genres**.
 
-Double-click a song to play it: the list it is in becomes the queue, as on the iPod. Click an album cover for its songs on a card over the grid. Type anywhere to search every view; Esc clears it.
+Double-click a song to play it: the list it is in becomes the queue, as on the iPod. Click an album cover for its songs on a card over the grid, with Play and Shuffle; its album and artist names open their pages. Type anywhere to search every view; Esc clears it.
 
 <p><img src="docs/screenshots/album.png" width="49%" alt="Album page: large cover, details, Play and Shuffle, and the songs"> <img src="docs/screenshots/artist.png" width="49%" alt="Artist page: each album with its cover and songs"></p>
 
-**Album and artist pages.** Click the album or artist name under the playing song, or right-click a song for Show Album and Show Artist. ‹ Back returns to the tab you were on. The playing song is marked ▶ in every list.
+**Album and artist pages.** Click the album or artist name under the playing song, or right-click a song, an album or an artist for Show Album and Show Artist. ‹ Back returns to the tab you were on. The playing song is marked ▶ in every list.
 
 <p><img src="docs/screenshots/upnext.png" width="49%" alt="Up Next"> <img src="docs/screenshots/menu.png" width="49%" alt="Right-click menu: Play Next, Add to Up Next, Add to Playlist"></p>
 
@@ -62,8 +65,8 @@ Double-click a song to play it: the list it is in becomes the queue, as on the i
 
 Two looks on the same layout, picked in the ⋯ menu:
 
-- **Flat** (default): iOS 7–8. Flat bars, hairline dividers, controls in the accent colour, text tabs.
-- **Classic**: iOS 4–6. Gradient bars, embossed icons, a segmented tab control, a pill-shaped search field.
+- **Flat** (default): flat bars, hairline dividers, controls in the accent colour, text tabs.
+- **Classic**: gradient bars, embossed icons, a segmented tab control, a pill-shaped search field.
 
 ![Classic style](docs/screenshots/classic.png)
 
@@ -81,6 +84,7 @@ Colours come from Kindling's palette (`~/.cache/kindling/colors`). Pick a new wa
 | Ctrl+↑ / Ctrl+↓ | volume up / down |
 | Ctrl+F, or just type | search |
 | Ctrl+1 … Ctrl+5 | Playlists, Songs, Artists, Albums, Genres |
+| Delete | remove the selected songs from Up Next or the playlist |
 | Ctrl+Shift+M | mini player and back |
 | Ctrl+Q | quit |
 
@@ -88,7 +92,7 @@ Media keys work through MPRIS, which Ember provides itself: `playerctl`, and so 
 
 ## Settings
 
-The ⋯ menu; they are kept in `~/.config/ember/settings`.
+The ⋯ menu; they are kept in `~/.config/ember/settings`, along with the window size and tab Ember reopens with.
 
 - **Style**: Flat or Classic. `EMBER_STYLE=classic ember` tries one without saving it.
 - **Keep Playing After Ember Closes**: off by default. Closing Ember then pauses the music and shuts down Ember's own MPD, which saves its place and resumes there, paused, next time. Media keys only reach MPD while Ember runs.
@@ -97,7 +101,7 @@ The ⋯ menu; they are kept in `~/.config/ember/settings`.
 
 While the Discord and cover switches are off, those modules (`src/discord.c`, `src/coverart.c`) do nothing at all: no socket, no network, no helper processes.
 
-`MPD_HOST` points Ember at another MPD.
+`MPD_HOST` points Ember at another MPD: `MPD_HOST=localhost ember`, or the path of its socket (`MPD_HOST=/run/mpd/socket ember`). To make it stick, add `export MPD_HOST=...` to your `~/.profile`. Album covers need MPD 0.22 or newer and Play Next 0.23.
 
 ## Why MPD
 

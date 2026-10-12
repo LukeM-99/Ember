@@ -41,8 +41,8 @@ static const char *shared =
   "button.newlist, button.textbutton { color: @accent; }\n"
   "button.newlist { margin: 0 8px; }\n"
   ".nowbar button:checked { background: alpha(@accent, .2); }\n"
-  ".nowbar button.shuffle { color: @fg2; }\n"  /* off: dim, like the iPod's */
-  ".nowbar button.shuffle:checked { color: @accent; }\n"
+  ".nowbar button.mode { color: @fg2; }\n"  /* shuffle, repeat off: dim, like the iPod's */
+  ".nowbar button.mode:checked { color: @accent; }\n"
   ".mini, .micro { border: 1px solid alpha(black, .5); }\n"
   ".mini .title { font-weight: bold; }\n"
   ".shade { background: alpha(black, .55); }\n"

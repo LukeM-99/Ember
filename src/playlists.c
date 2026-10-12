@@ -10,6 +10,7 @@ static GPtrArray *track_songs;       // owns the Songs in tracks
 static GtkTreeView *list;
 static GtkWidget *detail, *menu;
 static GPtrArray *drafts;            // names not yet in MPD
+static char *rename_to;              // select this once MPD's reload brings it in
 
 static char *selected(void) {
   GtkTreeIter it;
@@ -19,19 +20,21 @@ static char *selected(void) {
   return name;
 }
 
-static void select_name(const char *name) {
+static gboolean find(const char *name, GtkTreeIter *it) {
   GtkTreeModel *m = GTK_TREE_MODEL(names);
-  GtkTreeIter it;
-  for (gboolean more = gtk_tree_model_get_iter_first(m, &it); more; more = gtk_tree_model_iter_next(m, &it)) {
+  for (gboolean more = gtk_tree_model_get_iter_first(m, it); more; more = gtk_tree_model_iter_next(m, it)) {
     char *n;
-    gtk_tree_model_get(m, &it, 0, &n, -1);
+    gtk_tree_model_get(m, it, 0, &n, -1);
     gboolean hit = !g_strcmp0(n, name);
     g_free(n);
-    if (hit) {
-      gtk_tree_selection_select_iter(gtk_tree_view_get_selection(list), &it);
-      return;
-    }
+    if (hit) return TRUE;
   }
+  return FALSE;
+}
+
+static void select_name(const char *name) {
+  GtkTreeIter it;
+  if (find(name, &it)) gtk_tree_selection_select_iter(gtk_tree_view_get_selection(list), &it);
 }
 
 static void load_tracks(void) {
@@ -85,11 +88,11 @@ void playlists_load(void) {
   for (guint i = 0; i < found->len; i++) gtk_list_store_insert_with_values(names, NULL, -1, 0, found->pdata[i], -1);
   gtk_tree_view_set_model(list, GTK_TREE_MODEL(names));
   select_name(was);
-  if (!was) {
-    GtkTreeIter it;
-    if (gtk_tree_model_get_iter_first(GTK_TREE_MODEL(names), &it))
-      gtk_tree_selection_select_iter(gtk_tree_view_get_selection(list), &it);
-  }
+  if (rename_to) { select_name(rename_to); g_clear_pointer(&rename_to, g_free); }
+  GtkTreeIter it;  // renamed or deleted: the first one, rather than nothing
+  GtkTreeSelection *sel = gtk_tree_view_get_selection(list);
+  if (!gtk_tree_selection_get_selected(sel, NULL, &it) && gtk_tree_model_get_iter_first(GTK_TREE_MODEL(names), &it))
+    gtk_tree_selection_select_iter(sel, &it);
   g_free(was);
   g_ptr_array_unref(found);
   load_tracks();  // the open playlist may have changed too
@@ -100,7 +103,8 @@ void playlists_load(void) {
 
 static void name_changed(GtkEntry *e, GtkDialog *d) {
   char *t = g_strstrip(g_strdup(gtk_entry_get_text(e)));  // MPD refuses a slash or a newline
-  gtk_dialog_set_response_sensitive(d, GTK_RESPONSE_OK, *t && !strpbrk(t, "/\n\r"));
+  GtkTreeIter it;  // and a name that's taken: saving fails, adding would join the existing playlist
+  gtk_dialog_set_response_sensitive(d, GTK_RESPONSE_OK, *t && !strpbrk(t, "/\n\r") && !find(t, &it));
   g_free(t);
 }
 
@@ -137,40 +141,19 @@ static gboolean confirm(const char *question, const char *detail_text, const cha
 
 // ---- changing playlists
 
-static void add_to(const char *name, char **uris) {
-  if (!begin()) return;
-  guint n = g_strv_length(uris);
-  for (guint i = 0; i < n && ok(); i += 500) {  // MPD caps a command list at 2 MB
-    mpd_command_list_begin(conn, false);
-    for (guint j = i; j < n && j < i + 500; j++) mpd_send_playlist_add(conn, name, uris[j]);
-    mpd_command_list_end(conn);
-    mpd_response_finish(conn);
-  }
-  end();  // MPD reports the change, and playlists_load picks it up
-}
-
-static void on_add(GtkMenuItem *item, char **uris) {
-  add_to(g_object_get_data(G_OBJECT(item), "name"), uris);
-}
-
-static void on_add_new(GtkMenuItem *item, char **uris) {
-  (void)item;
-  char *name = ask_name("New Playlist", "", "Create");
-  if (name) add_to(name, uris);
-  g_free(name);
-}
-
-// Play Next puts the songs right after the current one, in order; Add to Up Next appends them.
-static void enqueue(char **uris, gboolean next) {
+// Into a playlist, or the queue: Play Next puts the songs right after the current one, in
+// order; Add to Up Next appends them. MPD reports the change, and the views pick it up.
+static void add(const char *playlist, char **uris, gboolean next) {
   if (!begin()) return;
   int at = -1;
   struct mpd_status *st = next ? mpd_run_status(conn) : NULL;
   if (st) at = mpd_status_get_song_pos(st), mpd_status_free(st);
   guint n = g_strv_length(uris);
-  for (guint i = 0; i < n && ok(); i += 500) {
+  for (guint i = 0; i < n && ok(); i += 500) {  // MPD caps a command list at 2 MB
     mpd_command_list_begin(conn, false);
     for (guint j = i; j < n && j < i + 500; j++)
-      if (at >= 0) mpd_send_add_whence(conn, uris[j], at + 1 + j, MPD_POSITION_ABSOLUTE);
+      if (playlist) mpd_send_playlist_add(conn, playlist, uris[j]);
+      else if (at >= 0) mpd_send_add_whence(conn, uris[j], at + 1 + j, MPD_POSITION_ABSOLUTE);
       else mpd_send_add(conn, uris[j]);
     mpd_command_list_end(conn);
     mpd_response_finish(conn);
@@ -178,8 +161,16 @@ static void enqueue(char **uris, gboolean next) {
   end();
 }
 
-static void on_play_next(GtkMenuItem *item, char **uris) { (void)item; enqueue(uris, TRUE); }
-static void on_up_next(GtkMenuItem *item, char **uris) { (void)item; enqueue(uris, FALSE); }
+static void on_add(GtkMenuItem *item, char **uris) { add(g_object_get_data(G_OBJECT(item), "name"), uris, FALSE); }
+static void on_play_next(GtkMenuItem *item, char **uris) { (void)item; add(NULL, uris, TRUE); }
+static void on_up_next(GtkMenuItem *item, char **uris) { (void)item; add(NULL, uris, FALSE); }
+
+static void on_add_new(GtkMenuItem *item, char **uris) {
+  (void)item;
+  char *name = ask_name("New Playlist", "", "Create");
+  if (name) add(name, uris, FALSE);
+  g_free(name);
+}
 
 static void on_remove(GtkMenuItem *item, gpointer unused) {
   (void)item, (void)unused;
@@ -215,8 +206,9 @@ static void on_rename(GtkMenuItem *item, gpointer unused) {
     g_ptr_array_add(drafts, g_strdup(name));
     playlists_load();
   } else if (name && begin()) {
-    mpd_run_rename(conn, old, name);
-    end();
+    g_free(rename_to), rename_to = g_strdup(name);
+    if (!mpd_run_rename(conn, old, name)) g_clear_pointer(&rename_to, g_free);  // e.g. the name is taken
+    end();  // MPD reports the change, and playlists_load selects rename_to
   }
   if (name) select_name(name);
   g_free(old), g_free(name);
@@ -288,15 +280,20 @@ void song_menu(GPtrArray *songs, GdkEvent *ev, GtkWidget *from) {
     gtk_tree_model_get(nm, &it, 0, &n, -1);
     g_object_set_data_full(G_OBJECT(item(sub, n, G_CALLBACK(on_add), uris)), "name", n, g_free);
   }
-  if (songs->len == 1) {  // where this song lives
-    Song *s = songs->pdata[0];
-    char *key = g_strconcat(s->albumartist, "\x1f", s->album, NULL);
-    g_object_set_data_full(G_OBJECT(m), "album", key, g_free);
-    g_object_set_data_full(G_OBJECT(m), "artist", g_strdup(s->albumartist), g_free);
-    if (library_album(key)) item(m, "Show Album", G_CALLBACK(on_show), "album");
-    if (library_artist(s->albumartist)) item(m, "Show Artist", G_CALLBACK(on_show), "artist");
-    gtk_menu_shell_append(GTK_MENU_SHELL(m), gtk_separator_menu_item_new());
+  Song *s = songs->pdata[0];  // where these songs live, if they're from one album or album artist
+  gboolean one_artist = TRUE, one_album = TRUE;
+  for (guint i = 1; i < songs->len && one_artist; i++) {
+    Song *t = songs->pdata[i];
+    one_artist = !strcmp(t->albumartist, s->albumartist);
+    one_album = one_album && one_artist && !strcmp(t->album, s->album);
   }
+  char *key = g_strconcat(s->albumartist, "\x1f", s->album, NULL);
+  g_object_set_data_full(G_OBJECT(m), "album", key, g_free);
+  g_object_set_data_full(G_OBJECT(m), "artist", g_strdup(s->albumartist), g_free);
+  gboolean shows = FALSE;
+  if (one_album && library_album(key)) item(m, "Show Album", G_CALLBACK(on_show), "album"), shows = TRUE;
+  if (one_artist && library_artist(s->albumartist)) item(m, "Show Artist", G_CALLBACK(on_show), "artist"), shows = TRUE;
+  if (shows) gtk_menu_shell_append(GTK_MENU_SHELL(m), gtk_separator_menu_item_new());
   item(m, "Play Next", G_CALLBACK(on_play_next), uris);
   item(m, "Add to Up Next", G_CALLBACK(on_up_next), uris);
   char *label = g_strdup_printf("Add %s to Playlist", songs->len == 1 ? "Song" : "Songs");
@@ -358,6 +355,7 @@ GtkWidget *playlists_page(void) {
   static const int cols[] = { NAME, TIME, ARTIST, ALBUM };
   detail = song_list(GTK_TREE_MODEL(tracks), cols, 4, TRUE);
   g_object_set_data(G_OBJECT(detail), "menu-extra", menu_extra);
+  g_object_set_data(G_OBJECT(detail), "on-delete", on_remove);
 
   GtkWidget *pane = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
   gtk_paned_pack1(GTK_PANED(pane), left, FALSE, FALSE);

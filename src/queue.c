@@ -87,13 +87,6 @@ static void on_toggle(GtkToggleButton *b) {
 
 static void on_closed(void) { gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), FALSE); }
 
-static GtkWidget *text_button(const char *label, GCallback cb) {
-  GtkWidget *b = gtk_button_new_with_label(label);
-  gtk_style_context_add_class(gtk_widget_get_style_context(b), "textbutton");
-  g_signal_connect(b, "clicked", cb, NULL);
-  return b;
-}
-
 GtkWidget *queue_button(void) {
   button = gtk_toggle_button_new();
   gtk_button_set_image(GTK_BUTTON(button), gtk_image_new_from_icon_name("view-list-symbolic", GTK_ICON_SIZE_LARGE_TOOLBAR));
@@ -107,6 +100,7 @@ GtkWidget *queue_button(void) {
   list = song_list(GTK_TREE_MODEL(store), cols, 3, FALSE);
   g_object_set_data(G_OBJECT(list), "on-activate", on_activate);
   g_object_set_data(G_OBJECT(list), "menu-extra", menu_extra);
+  g_object_set_data(G_OBJECT(list), "on-delete", on_remove);
 
   GtkWidget *title = gtk_label_new(NULL);
   gtk_label_set_markup(GTK_LABEL(title), "<big><b>Up Next</b></big>");
@@ -115,8 +109,8 @@ GtkWidget *queue_button(void) {
   GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
   gtk_box_pack_start(GTK_BOX(head), title, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(head), count, FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(head), text_button("Clear", G_CALLBACK(on_clear)), FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(head), text_button("Save as Playlist…", G_CALLBACK(on_save)), FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(head), text_button("Clear", "textbutton", G_CALLBACK(on_clear), NULL), FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(head), text_button("Save as Playlist…", "textbutton", G_CALLBACK(on_save), NULL), FALSE, FALSE, 0);
 
   empty = gtk_label_new("Nothing up next. Right-click songs to add them.");
   gtk_style_context_add_class(gtk_widget_get_style_context(empty), "dim");

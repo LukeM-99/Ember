@@ -9,7 +9,7 @@ static int mode = FULL;
 static GtkWidget *main_win, *mini, *micro;
 static GtkWidget *mini_art, *mini_title, *mini_sub, *mini_stack, *mini_play, *mini_pos, *mini_hover;
 static GtkWidget *micro_art, *micro_shade, *micro_play, *micro_pos;
-static char *key, *uri;  // the playing song's cover key and file
+static char *key;  // the playing song's cover key
 static int mini_size, micro_size;
 static int pos[3][2] = { { -1, -1 }, { -1, -1 }, { -1, -1 } };  // where each window was left
 
@@ -55,9 +55,8 @@ void mini_song(const char *title, const char *sub, const struct mpd_song *song) 
   g_free(tip);
   char *k = song ? album_key(song) : NULL;
   if (g_strcmp0(k, key)) {
-    g_free(key), g_free(uri);
-    key = k, uri = song ? g_strdup(mpd_song_get_uri(song)) : NULL;
-    if (key) art_want(key, uri), art_want_size(key, uri, micro_size);
+    g_free(key), key = k;
+    if (key) art_want(key, mpd_song_get_uri(song)), art_want_size(key, mpd_song_get_uri(song), micro_size);
     mini_art_changed();
   } else g_free(k);
 }
@@ -106,26 +105,20 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer unused) {
   return GDK_EVENT_PROPAGATE;
 }
 
-static void quit(void) { g_application_quit(g_application_get_default()); }  // MPD plays on
+static gboolean quit(void) {  // also the windows' delete-event, which needs the gboolean; on_shutdown follows Keep Playing
+  g_application_quit(g_application_get_default());
+  return GDK_EVENT_STOP;
+}
 static void to_full(void) { show_mode(FULL); }
 static void to_mini(void) { show_mode(MINI); }
 static void to_micro(void) { show_mode(MICRO); }
 
-static GtkWidget *btn(const char *icon, const char *tip, GtkIconSize size, GCallback cb) {
-  GtkWidget *b = gtk_button_new_from_icon_name(icon, size);
-  gtk_button_set_relief(GTK_BUTTON(b), GTK_RELIEF_NONE);
-  gtk_widget_set_tooltip_text(b, tip);
-  gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
-  g_signal_connect(b, "clicked", cb, NULL);
-  return b;
-}
-
 static GtkWidget *transport(GtkIconSize size, GtkWidget **play) {
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-  *play = btn("media-playback-start-symbolic", "Play/Pause", size, G_CALLBACK(player_toggle));
-  gtk_box_pack_start(GTK_BOX(box), btn("media-skip-backward-symbolic", "Previous", size, G_CALLBACK(player_prev)), FALSE, FALSE, 0);
+  *play = icon_button("media-playback-start-symbolic", "Play/Pause", size, G_CALLBACK(player_toggle));
+  gtk_box_pack_start(GTK_BOX(box), icon_button("media-skip-backward-symbolic", "Previous", size, G_CALLBACK(player_prev)), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), *play, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(box), btn("media-skip-forward-symbolic", "Next", size, G_CALLBACK(player_next)), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box), icon_button("media-skip-forward-symbolic", "Next", size, G_CALLBACK(player_next)), FALSE, FALSE, 0);
   gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
   return box;
 }
@@ -162,8 +155,8 @@ static void build_mini(GtkApplication *app) {
   // over the cover, on hover: close, and back to the full window
   mini_hover = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_style_context_add_class(gtk_widget_get_style_context(mini_hover), "shade");
-  gtk_box_pack_start(GTK_BOX(mini_hover), btn("window-close-symbolic", "Quit Ember (music keeps playing)", GTK_ICON_SIZE_MENU, G_CALLBACK(quit)), TRUE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(mini_hover), btn("window-maximize-symbolic", "Full Window", GTK_ICON_SIZE_MENU, G_CALLBACK(to_full)), TRUE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(mini_hover), icon_button("window-close-symbolic", "Quit Ember", GTK_ICON_SIZE_MENU, G_CALLBACK(quit)), TRUE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(mini_hover), icon_button("window-maximize-symbolic", "Full Window", GTK_ICON_SIZE_MENU, G_CALLBACK(to_full)), TRUE, FALSE, 0);
   GtkWidget *cover = gtk_overlay_new();
   gtk_container_add(GTK_CONTAINER(cover), mini_art);
   gtk_overlay_add_overlay(GTK_OVERLAY(cover), mini_hover);
@@ -180,7 +173,7 @@ static void build_mini(GtkApplication *app) {
   }
   GtkWidget *controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   gtk_box_set_center_widget(GTK_BOX(controls), transport(GTK_ICON_SIZE_LARGE_TOOLBAR, &mini_play));
-  gtk_box_pack_end(GTK_BOX(controls), btn("view-restore-symbolic", "Micro Player", GTK_ICON_SIZE_MENU, G_CALLBACK(to_micro)), FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(controls), icon_button("view-restore-symbolic", "Micro Player", GTK_ICON_SIZE_MENU, G_CALLBACK(to_micro)), FALSE, FALSE, 0);
   mini_stack = gtk_stack_new();
   gtk_stack_set_transition_type(GTK_STACK(mini_stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
   gtk_stack_set_transition_duration(GTK_STACK(mini_stack), 120);
@@ -208,9 +201,9 @@ static void build_micro(GtkApplication *app) {
   gtk_widget_set_size_request(micro_art, micro_size, micro_size);
 
   GtkWidget *top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_box_pack_start(GTK_BOX(top), btn("window-close-symbolic", "Quit Ember (music keeps playing)", GTK_ICON_SIZE_MENU, G_CALLBACK(quit)), FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(top), btn("window-maximize-symbolic", "Full Window", GTK_ICON_SIZE_MENU, G_CALLBACK(to_full)), FALSE, FALSE, 0);
-  gtk_box_pack_end(GTK_BOX(top), btn("view-fullscreen-symbolic", "Mini Player", GTK_ICON_SIZE_MENU, G_CALLBACK(to_mini)), FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(top), icon_button("window-close-symbolic", "Quit Ember", GTK_ICON_SIZE_MENU, G_CALLBACK(quit)), FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(top), icon_button("window-maximize-symbolic", "Full Window", GTK_ICON_SIZE_MENU, G_CALLBACK(to_full)), FALSE, FALSE, 0);
+  gtk_box_pack_end(GTK_BOX(top), icon_button("view-fullscreen-symbolic", "Mini Player", GTK_ICON_SIZE_MENU, G_CALLBACK(to_mini)), FALSE, FALSE, 0);
   micro_pos = progress();
   micro_shade = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_style_context_add_class(gtk_widget_get_style_context(micro_shade), "shade");
@@ -234,4 +227,19 @@ void mini_init(GtkApplication *app, GtkWidget *main_window) {
   build_mini(app);
   build_micro(app);
   mini_art_changed();
+  char *saved = settings_string("mini-positions");  // "x,y x,y" for mini, micro
+  if (saved && sscanf(saved, "%d,%d %d,%d", &pos[MINI][0], &pos[MINI][1], &pos[MICRO][0], &pos[MICRO][1]) == 4)
+    for (int m = MINI; m <= MICRO; m++) {
+      GdkRectangle r;  // on a monitor since unplugged: let the window manager place it instead
+      gdk_monitor_get_geometry(gdk_display_get_monitor_at_point(gdk_display_get_default(), pos[m][0], pos[m][1]), &r);
+      if (pos[m][0] < r.x || pos[m][1] < r.y || pos[m][0] >= r.x + r.width || pos[m][1] >= r.y + r.height) pos[m][0] = pos[m][1] = -1;
+    }
+  g_free(saved);
+}
+
+void mini_save(void) {  // at quit, for next time
+  if (mode != FULL) gtk_window_get_position(GTK_WINDOW(window_of(mode)), &pos[mode][0], &pos[mode][1]);
+  char *s = g_strdup_printf("%d,%d %d,%d", pos[MINI][0], pos[MINI][1], pos[MICRO][0], pos[MICRO][1]);
+  settings_set_string("mini-positions", s);
+  g_free(s);
 }

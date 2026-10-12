@@ -112,6 +112,10 @@ static void on_search(GObject *p, GAsyncResult *res, gpointer data) {
 static void next(void) {
   Job *j;
   if (busy || !(j = g_queue_pop_head(&jobs))) return;
+  char *k = id(j->key);
+  gboolean known = g_key_file_has_key(cache, "covers", k, NULL);  // queued again while it was being looked up
+  g_free(k);
+  if (known) { job_free(j); next(); return; }
   busy = TRUE;
   char *a = lucene(j->artist), *b = lucene(j->album), *q = g_strdup_printf("releasegroup:%s AND artist:%s", b, a);
   char *qe = g_uri_escape_string(q, NULL, FALSE);
@@ -126,7 +130,7 @@ static void next(void) {
 // The cover's URL if it's known; otherwise NULL, and once it's found, ready() runs.
 const char *coverart_url(const char *key, const char *artist, const char *album) {
   static char *url;
-  if (!settings_cover_lookup() || !key || !strcmp(album, "Unknown Album")) return NULL;
+  if (!settings_get("cover-lookup") || !key || !strcmp(album, "Unknown Album")) return NULL;
   g_free(url);
   char *k = id(key);
   url = g_key_file_get_string(cache, "covers", k, NULL);

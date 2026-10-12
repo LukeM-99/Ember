@@ -88,7 +88,7 @@ static void json_str(GString *o, const char *s) {  // a JSON string, cut to Disc
 static gboolean send_now(gpointer unused) {
   (void)unused;
   pending = 0;
-  if (!settings_discord() || !connect_discord()) return G_SOURCE_REMOVE;
+  if (!settings_get("discord") || !connect_discord()) return G_SOURCE_REMOVE;
   GString *a = g_string_new(NULL);
   if (now.playing && now.title) {  // paused or stopped: no presence
     const char *art = coverart_url(now.key, now.albumartist, now.album);
@@ -122,13 +122,13 @@ static void schedule(void) {  // Discord accepts about 5 updates in 20 s; next/n
 }
 
 void discord_update(const struct mpd_song *song, gboolean playing, double elapsed, unsigned duration) {
-  if (!settings_discord()) return;
+  if (!settings_get("discord")) return;
   g_free(now.title), g_free(now.artist), g_free(now.album), g_free(now.albumartist), g_free(now.key);
   now.title = now.artist = now.album = now.albumartist = now.key = NULL;
   now.playing = playing && song;
   if (song) {
-    const char *t = mpd_song_get_tag(song, MPD_TAG_TITLE, 0), *ar = mpd_song_get_tag(song, MPD_TAG_ARTIST, 0);
-    const char *al = mpd_song_get_tag(song, MPD_TAG_ALBUM, 0), *aa = mpd_song_get_tag(song, MPD_TAG_ALBUM_ARTIST, 0);
+    const char *t = song_tag(song, MPD_TAG_TITLE), *ar = song_tag(song, MPD_TAG_ARTIST);
+    const char *al = song_tag(song, MPD_TAG_ALBUM), *aa = song_tag(song, MPD_TAG_ALBUM_ARTIST);
     now.title = t ? g_strdup(t) : g_path_get_basename(mpd_song_get_uri(song));
     now.artist = g_strdup(ar ? ar : "Unknown Artist");
     now.album = g_strdup(al ? al : "Unknown Album");
@@ -140,15 +140,10 @@ void discord_update(const struct mpd_song *song, gboolean playing, double elapse
   schedule();
 }
 
-void discord_art_found(void) { if (settings_discord()) schedule(); }
+void discord_art_found(void) { if (settings_get("discord")) schedule(); }
 
 void discord_enable(gboolean on) {  // from the settings menu
   if (on) { retry_at = 0; schedule(); return; }
   if (pending) g_source_remove(pending), pending = 0;
-  if (sock) {
-    char *msg = g_strdup_printf("{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":%d,\"activity\":null},\"nonce\":\"off\"}", getpid());
-    frame(1, msg);
-    g_free(msg);
-  }
-  disconnect();
+  disconnect();  // which clears the presence
 }

@@ -48,7 +48,7 @@ static GVariant *metadata;           // floating-free: always a held reference
 static double volume = -1;           // 0..1; -1: MPD has no mixer
 static gint64 elapsed_us, elapsed_at, length_us;
 static int song_id = -1;
-static char *track, *key, *uri;      // current track's object path and cover
+static char *track, *key;            // current track's object path and cover
 
 static gint64 position(void) {
   gint64 p = elapsed_us + (!strcmp(status, "Playing") ? g_get_monotonic_time() - elapsed_at : 0);
@@ -72,19 +72,19 @@ static GVariant *build_metadata(const struct mpd_song *song) {
     g_variant_builder_add(&b, "{sv}", "mpris:trackid", g_variant_new_object_path(track));
     g_variant_builder_add(&b, "{sv}", "mpris:length", g_variant_new_int64(length_us));
     char *base = g_path_get_basename(mpd_song_get_uri(song));
-    v = mpd_song_get_tag(song, MPD_TAG_TITLE, 0);
+    v = song_tag(song, MPD_TAG_TITLE);
     g_variant_builder_add(&b, "{sv}", "xesam:title", g_variant_new_string(v ? v : base));
     g_free(base);
-    if ((v = mpd_song_get_tag(song, MPD_TAG_ARTIST, 0))) {
+    if ((v = song_tag(song, MPD_TAG_ARTIST))) {
       const char *a[] = { v, NULL };
       g_variant_builder_add(&b, "{sv}", "xesam:artist", g_variant_new_strv(a, -1));
     }
-    if ((v = mpd_song_get_tag(song, MPD_TAG_ALBUM_ARTIST, 0))) {
+    if ((v = song_tag(song, MPD_TAG_ALBUM_ARTIST))) {
       const char *a[] = { v, NULL };
       g_variant_builder_add(&b, "{sv}", "xesam:albumArtist", g_variant_new_strv(a, -1));
     }
-    if ((v = mpd_song_get_tag(song, MPD_TAG_ALBUM, 0))) g_variant_builder_add(&b, "{sv}", "xesam:album", g_variant_new_string(v));
-    if ((v = mpd_song_get_tag(song, MPD_TAG_TRACK, 0))) g_variant_builder_add(&b, "{sv}", "xesam:trackNumber", g_variant_new_int32(atoi(v)));
+    if ((v = song_tag(song, MPD_TAG_ALBUM))) g_variant_builder_add(&b, "{sv}", "xesam:album", g_variant_new_string(v));
+    if ((v = song_tag(song, MPD_TAG_TRACK))) g_variant_builder_add(&b, "{sv}", "xesam:trackNumber", g_variant_new_int32(atoi(v)));
     char *art = key ? art_file(key, art_size * 3 / 2) : NULL;  // the micro player's size
     if (!art && key) art = art_file(key, art_size);
     if (art) {
@@ -96,27 +96,26 @@ static GVariant *build_metadata(const struct mpd_song *song) {
   return g_variant_ref_sink(g_variant_builder_end(&b));
 }
 
-void mpris_update(const struct mpd_status *st, const struct mpd_song *song) {
-  enum mpd_state s = mpd_status_get_state(st);
+void mpris_update(const struct mpd_status *st, const struct mpd_song *song) {  // st NULL: MPD is gone
+  enum mpd_state s = st ? mpd_status_get_state(st) : MPD_STATE_STOP;
   const char *now = s == MPD_STATE_PLAY ? "Playing" : s == MPD_STATE_PAUSE ? "Paused" : "Stopped";
   gint64 predicted = position();
-  elapsed_us = (gint64)mpd_status_get_elapsed_ms(st) * 1000;
+  elapsed_us = st ? (gint64)mpd_status_get_elapsed_ms(st) * 1000 : 0;
   elapsed_at = g_get_monotonic_time();
-  length_us = (gint64)mpd_status_get_total_time(st) * 1000000;
+  length_us = st ? (gint64)mpd_status_get_total_time(st) * 1000000 : 0;
   if (strcmp(now, status)) status = now, changed("PlaybackStatus", g_variant_new_string(status));
 
-  int vol = mpd_status_get_volume(st);
+  int vol = st ? mpd_status_get_volume(st) : -1;
   double v = vol < 0 ? -1 : vol / 100.0;
   if (v != volume) volume = v, changed("Volume", g_variant_new_double(MAX(volume, 0)));
 
   int id = song ? (int)mpd_song_get_id(song) : -1;
   if (id != song_id) {
     song_id = id;
-    g_free(track), g_free(key), g_free(uri);
+    g_free(track), g_free(key);
     track = id >= 0 ? g_strdup_printf("/org/mpris/MediaPlayer2/Track/%d", id) : g_strdup("/org/mpris/MediaPlayer2/TrackList/NoTrack");
     key = song ? album_key(song) : NULL;
-    uri = song ? g_strdup(mpd_song_get_uri(song)) : NULL;
-    if (key) art_want_size(key, uri, art_size * 3 / 2);  // so artUrl has a file to point at
+    if (key) art_want_size(key, mpd_song_get_uri(song), art_size * 3 / 2);  // so artUrl has a file to point at
     if (metadata) g_variant_unref(metadata);
     metadata = build_metadata(song);
     changed("Metadata", metadata);
@@ -143,13 +142,6 @@ void mpris_art_changed(void) {  // the cover arrived after the song started: poi
 
 // ---- calls from the bus
 
-static void play_state(int what) {  // 1 pause, 2 stop
-  if (!begin()) return;
-  if (what == 1) mpd_run_pause(conn, true);
-  else mpd_run_stop(conn);
-  end();
-}
-
 static void on_call(GDBusConnection *c, const char *sender, const char *path, const char *iface,
                     const char *method, GVariant *args, GDBusMethodInvocation *inv, gpointer unused) {
   (void)c, (void)sender, (void)path, (void)iface, (void)unused;
@@ -159,8 +151,8 @@ static void on_call(GDBusConnection *c, const char *sender, const char *path, co
   else if (!strcmp(method, "Previous")) player_prev();
   else if (!strcmp(method, "PlayPause")) player_toggle();
   else if (!strcmp(method, "Play")) { if (strcmp(status, "Playing")) player_toggle(); }  // empty queue: everything
-  else if (!strcmp(method, "Pause")) play_state(1);
-  else if (!strcmp(method, "Stop")) play_state(2);
+  else if (!strcmp(method, "Pause")) { if (begin()) mpd_run_pause(conn, true), end(); }
+  else if (!strcmp(method, "Stop")) { if (begin()) mpd_run_stop(conn), end(); }
   else if (!strcmp(method, "Seek")) {
     gint64 off;
     g_variant_get(args, "(x)", &off);

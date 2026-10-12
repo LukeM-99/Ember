@@ -21,12 +21,10 @@ const char *settings_style(void) {  // EMBER_STYLE wins, for trying a style once
   return s && !g_strcmp0(s, "classic") ? "classic" : "flat";
 }
 
-gboolean settings_discord(void) { return g_key_file_get_boolean(kf, "ember", "discord", NULL); }
-gboolean settings_cover_lookup(void) { return g_key_file_get_boolean(kf, "ember", "cover-lookup", NULL); }
+char *settings_string(const char *key) { return g_key_file_get_string(kf, "ember", key, NULL); }
+void settings_set_string(const char *key, const char *v) { g_key_file_set_string(kf, "ember", key, v), save(); }
 
-gboolean settings_keep_playing(void) {
-  return g_key_file_get_boolean(kf, "ember", "keep-playing", NULL);  // missing: FALSE
-}
+gboolean settings_get(const char *key) { return g_key_file_get_boolean(kf, "ember", key, NULL); }  // missing: FALSE
 
 static void on_style(GtkCheckMenuItem *item, const char *style) {
   if (!gtk_check_menu_item_get_active(item)) return;  // the radio being switched off
@@ -42,20 +40,14 @@ static void on_toggle(GtkCheckMenuItem *item, const char *key) {
   if (!strcmp(key, "discord")) {
     discord_enable(on);
     if (on && begin()) end();  // end() refreshes, which hands Discord the playing song
-  } else discord_art_found();
+  } else if (!strcmp(key, "cover-lookup")) discord_art_found();
 }
 
-static GtkWidget *check(GtkWidget *menu, const char *label, const char *key) {
+static void check(GtkWidget *menu, const char *label, const char *key) {
   GtkWidget *c = gtk_check_menu_item_new_with_label(label);
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(c), g_key_file_get_boolean(kf, "ember", key, NULL));
+  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(c), settings_get(key));
   g_signal_connect(c, "toggled", G_CALLBACK(on_toggle), (gpointer)key);
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), c);
-  return c;
-}
-
-static void on_keep(GtkCheckMenuItem *item) {
-  g_key_file_set_boolean(kf, "ember", "keep-playing", gtk_check_menu_item_get_active(item));
-  save();
 }
 
 void settings_init(void) {
@@ -68,7 +60,7 @@ GtkWidget *settings_button(void) {
   GtkWidget *menu = gtk_menu_new();
   GSList *group = NULL;
   const char *now = settings_style();
-  static const char *styles[][2] = { { "flat", "Flat Style (iOS 7)" }, { "classic", "Classic Style (iOS 6)" } };
+  static const char *styles[][2] = { { "flat", "Flat Style" }, { "classic", "Classic Style" } };
   for (int i = 0; i < 2; i++) {
     GtkWidget *r = gtk_radio_menu_item_new_with_label(group, styles[i][1]);
     group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(r));
@@ -78,10 +70,7 @@ GtkWidget *settings_button(void) {
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), r);
   }
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
-  GtkWidget *keep = gtk_check_menu_item_new_with_label("Keep Playing After Ember Closes");
-  gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(keep), settings_keep_playing());
-  g_signal_connect(keep, "toggled", G_CALLBACK(on_keep), NULL);
-  gtk_menu_shell_append(GTK_MENU_SHELL(menu), keep);
+  check(menu, "Keep Playing After Ember Closes", "keep-playing");
   // modules that talk to other services: off until turned on
   gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
   check(menu, "Show What's Playing on Discord", "discord");
